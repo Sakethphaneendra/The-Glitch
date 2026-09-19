@@ -1,0 +1,27 @@
+{
+  "name": "glitch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Glitch - control music from a desktop while your phone handles Bluetooth playback. Designed and Developed by Saketh Phaneendra.",
+  "author": "Saketh Phaneendra",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "postinstall": "npm --prefix client install",
+    "build": "npm --prefix client run build",
+    "start": "npm run build && node server.js",
+    "serve": "node server.js",
+    "dev": "concurrently -n server,client -c magenta,cyan \"nodemon server.js\" \"npm --prefix client run dev\""
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.4"
+  }
+}
