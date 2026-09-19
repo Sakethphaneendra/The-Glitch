@@ -24,7 +24,6 @@ export class SessionManager {
     const session = {
       code,
       room: `master:${code}`,
-      mobileRoom: `master:${code}:mobile`,
       masterToken: makeToken(),
       mobileToken: null,
       masterSocketId: null,

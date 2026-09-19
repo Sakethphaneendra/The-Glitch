@@ -157,33 +157,6 @@ export default function Mobile({ navigate, serverConnected }) {
     socket.emit('mobile:error', info);
   };
 
-  const executeCommand = useCallback((command) => {
-    const { action, value, videoId, autoplay } = command || {};
-    const player = playerRef.current;
-    if (!player || !playerReadyRef.current) {
-      pendingCommandsRef.current.push(command);
-      return;
-    }
-
-    try {
-      if (action === 'load' && videoId) {
-        player.loadVideoById(videoId);
-        if (autoplay !== false) player.playVideo();
-        return;
-      }
-      if (action === 'play') player.playVideo();
-      if (action === 'pause') player.pauseVideo();
-      if (action === 'volume') player.setVolume(Math.min(100, Math.max(0, Number(value))));
-      if (action === 'seek') player.seekTo(Math.max(0, Number(value)), true);
-      if (action === 'nudge') {
-        const target = Math.max(0, (player.getCurrentTime() || 0) + Number(value));
-        player.seekTo(target, true);
-      }
-    } catch {
-      pendingCommandsRef.current.push(command);
-    }
-  }, []);
-
   const buildPlayer = useCallback(
     async (videoId) => {
       const YT = await loadYouTubeApi().catch((err) => {
@@ -247,6 +220,81 @@ export default function Mobile({ navigate, serverConnected }) {
     [push]
   );
 
+  // Single source of truth for "switch the player to this video". Both the
+  // master's explicit next/prev command AND the state-broadcast nonce watcher
+  // below (used by jump/remove/auto-advance, which have no explicit command)
+  // route through here. Whichever arrives first "claims" the nonce; the other
+  // one becomes a no-op. This is what stops next/prev from firing
+  // loadVideoById() twice back to back — which is what made the YouTube
+  // player silently ignore the skip and looked like "next doesn't work".
+  const loadSong = useCallback(
+    (videoId, nonce, autoplay = true) => {
+      // Already applied this exact change - the other path got there first.
+      if (nonce != null && nonce === nonceRef.current) return;
+
+      const player = playerRef.current;
+
+      // No player yet: building one already loads `videoId` as its initial
+      // video, so claim the nonce now and let construction do the loading.
+      if (!player) {
+        if (nonce != null) nonceRef.current = nonce;
+        setBlocked(null);
+        setMode('embedded');
+        buildPlayer(videoId);
+        return;
+      }
+
+      // Player exists but isn't ready yet: queue the raw request. Do NOT
+      // claim the nonce yet, so whichever call actually performs the load
+      // once the player is ready is the one that gets to claim it.
+      if (!playerReadyRef.current) {
+        pendingCommandsRef.current.push({ action: 'load', videoId, autoplay, nonce });
+        return;
+      }
+
+      if (nonce != null) nonceRef.current = nonce;
+      setBlocked(null);
+      setMode('embedded');
+      try {
+        player.loadVideoById(videoId);
+        if (autoplay === false) player.pauseVideo();
+      } catch {
+        buildPlayer(videoId);
+      }
+    },
+    [buildPlayer]
+  );
+
+  const executeCommand = useCallback(
+    (command) => {
+      const { action, value, videoId, autoplay, nonce } = command || {};
+      if (action === 'load' && videoId) {
+        loadSong(videoId, nonce, autoplay);
+        return;
+      }
+
+      const player = playerRef.current;
+      if (!player || !playerReadyRef.current) {
+        pendingCommandsRef.current.push(command);
+        return;
+      }
+
+      try {
+        if (action === 'play') player.playVideo();
+        if (action === 'pause') player.pauseVideo();
+        if (action === 'volume') player.setVolume(Math.min(100, Math.max(0, Number(value))));
+        if (action === 'seek') player.seekTo(Math.max(0, Number(value)), true);
+        if (action === 'nudge') {
+          const target = Math.max(0, (player.getCurrentTime() || 0) + Number(value));
+          player.seekTo(target, true);
+        }
+      } catch {
+        pendingCommandsRef.current.push(command);
+      }
+    },
+    [loadSong]
+  );
+
   // Arm playback with a real tap: mobile browsers will not start audio without one.
   const start = async () => {
     setArmed(true);
@@ -256,24 +304,15 @@ export default function Mobile({ navigate, serverConnected }) {
     nonceRef.current = session.playbackNonce;
   };
 
-  // Load a new song whenever the server bumps the playback nonce.
+  // Load a new song whenever the server bumps the playback nonce. This
+  // covers jump/remove/auto-advance, which have no explicit master command.
+  // For next/prev (which DO send an explicit command), loadSong's nonce
+  // guard makes this a safe no-op if the command already applied the change.
   useEffect(() => {
     if (!armed || !session?.currentSong) return;
     if (session.playbackNonce === nonceRef.current) return;
-    nonceRef.current = session.playbackNonce;
-    setBlocked(null);
-    setMode('embedded');
-    const player = playerRef.current;
-    if (!player) {
-      buildPlayer(session.currentSong.videoId);
-      return;
-    }
-    try {
-      player.loadVideoById(session.currentSong.videoId);
-    } catch {
-      buildPlayer(session.currentSong.videoId);
-    }
-  }, [armed, session, buildPlayer]);
+    loadSong(session.currentSong.videoId, session.playbackNonce);
+  }, [armed, session, loadSong]);
 
   // Commands from the master. Commands are buffered while YouTube is loading.
   useEffect(() => {
