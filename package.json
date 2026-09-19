@@ -10,7 +10,6 @@
     "node": ">=20"
   },
   "scripts": {
-    "postinstall": "npm --prefix client install",
     "build": "npm --prefix client run build",
     "start": "npm run build && node server.js",
     "serve": "node server.js",

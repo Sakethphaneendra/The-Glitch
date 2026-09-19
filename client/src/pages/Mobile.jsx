@@ -66,6 +66,8 @@ export default function Mobile({ navigate, serverConnected }) {
   const mountRef = useRef(null);
   const nonceRef = useRef(-1);
   const modeRef = useRef('embedded');
+  const playerReadyRef = useRef(false);
+  const pendingCommandsRef = useRef([]);
   const sessionRef = useRef(null);
 
   sessionRef.current = session;
@@ -119,6 +121,8 @@ export default function Mobile({ navigate, serverConnected }) {
         /* ignore */
       }
       playerRef.current = null;
+      playerReadyRef.current = false;
+      pendingCommandsRef.current = [];
     }
     setPaired(false);
     setSession(null);
@@ -153,6 +157,33 @@ export default function Mobile({ navigate, serverConnected }) {
     socket.emit('mobile:error', info);
   };
 
+  const executeCommand = useCallback((command) => {
+    const { action, value, videoId, autoplay } = command || {};
+    const player = playerRef.current;
+    if (!player || !playerReadyRef.current) {
+      pendingCommandsRef.current.push(command);
+      return;
+    }
+
+    try {
+      if (action === 'load' && videoId) {
+        player.loadVideoById(videoId);
+        if (autoplay !== false) player.playVideo();
+        return;
+      }
+      if (action === 'play') player.playVideo();
+      if (action === 'pause') player.pauseVideo();
+      if (action === 'volume') player.setVolume(Math.min(100, Math.max(0, Number(value))));
+      if (action === 'seek') player.seekTo(Math.max(0, Number(value)), true);
+      if (action === 'nudge') {
+        const target = Math.max(0, (player.getCurrentTime() || 0) + Number(value));
+        player.seekTo(target, true);
+      }
+    } catch {
+      pendingCommandsRef.current.push(command);
+    }
+  }, []);
+
   const buildPlayer = useCallback(
     async (videoId) => {
       const YT = await loadYouTubeApi().catch((err) => {
@@ -171,7 +202,26 @@ export default function Mobile({ navigate, serverConnected }) {
         },
         events: {
           onReady: (event) => {
-            event.target.playVideo();
+            playerReadyRef.current = true;
+
+            // Apply the server's current state instead of blindly playing.
+            const currentPlayback = sessionRef.current?.playback;
+            const shouldPlay = currentPlayback?.playing !== false;
+            try {
+              event.target.setVolume(
+                Math.min(100, Math.max(0, Number(currentPlayback?.volume ?? 100)))
+              );
+              if (shouldPlay) event.target.playVideo();
+              else event.target.pauseVideo();
+            } catch {
+              /* player may still be settling */
+            }
+
+            // Commands received while YouTube was loading are replayed now.
+            const pending = pendingCommandsRef.current.splice(0);
+            for (const command of pending) {
+              executeCommand(command);
+            }
           },
           onStateChange: (event) => {
             const YTS = window.YT.PlayerState;
@@ -225,27 +275,12 @@ export default function Mobile({ navigate, serverConnected }) {
     }
   }, [armed, session, buildPlayer]);
 
-  // Commands from the master.
+  // Commands from the master. Commands are buffered while YouTube is loading.
   useEffect(() => {
-    const onCommand = ({ action, value }) => {
-      const player = playerRef.current;
-      if (!player) return;
-      try {
-        if (action === 'play') player.playVideo();
-        if (action === 'pause') player.pauseVideo();
-        if (action === 'volume') player.setVolume(Math.min(100, Math.max(0, value)));
-        if (action === 'seek') player.seekTo(Math.max(0, value), true);
-        if (action === 'nudge') {
-          const target = Math.max(0, (player.getCurrentTime() || 0) + value);
-          player.seekTo(target, true);
-        }
-      } catch {
-        /* player not ready yet */
-      }
-    };
+    const onCommand = (command) => executeCommand(command);
     socket.on('command', onCommand);
     return () => socket.off('command', onCommand);
-  }, []);
+  }, [executeCommand]);
 
   // Heartbeat: the phone is the source of truth for position and duration.
   useEffect(() => {

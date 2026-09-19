@@ -197,12 +197,20 @@ export function attachSockets(io) {
           s.playback.playing = !s.playback.playing;
           toMobile(s, 'command', { action: s.playback.playing ? 'play' : 'pause' });
           break;
-        case 'next':
-          queue.next(s, { auto: false });
+        case 'next': {
+          const moved = queue.next(s, { auto: false });
+          if (!moved) return fail(cb, 'Already at the end of the queue.', 'QUEUE_END');
+          const song = queue.currentSong(s);
+          toMobile(s, 'command', { action: 'load', videoId: song.videoId, autoplay: true });
           break;
-        case 'prev':
-          queue.previous(s);
+        }
+        case 'prev': {
+          const moved = queue.previous(s);
+          if (!moved) return fail(cb, 'There is no previous song.', 'QUEUE_START');
+          const song = queue.currentSong(s);
+          toMobile(s, 'command', { action: 'load', videoId: song.videoId, autoplay: true });
           break;
+        }
         case 'seek': {
           const time = Number(payload?.value);
           if (!Number.isFinite(time) || time < 0) return fail(cb, 'Bad seek position.', 'BAD_VALUE');
