@@ -45,9 +45,13 @@ export function attachSockets(io) {
     io.to(session.room).emit('state', publicSession(session));
   };
 
+  // Commands go to the mobile's dedicated room, never to a raw socket id.
+  // A stored socket id can go stale (reconnect, host restart, proxy churn)
+  // and a stale-id emit fails silently; a room always reaches whichever
+  // socket is currently joined to it.
   const toMobile = (session, event, payload) => {
     if (!session.mobileSocketId) return false;
-    io.to(session.mobileSocketId).emit(event, payload);
+    io.to(session.mobileRoom).emit(event, payload);
     return true;
   };
 
@@ -257,6 +261,7 @@ export function attachSockets(io) {
       try {
         const s = sessions.pairMobile(code, socket.id);
         socket.join(s.room);
+        socket.join(s.mobileRoom);
         socket.data.role = 'mobile';
         socket.data.code = s.code;
         codeLimiter.clear(`pair:${socket.handshake.address}`);
@@ -272,6 +277,7 @@ export function attachSockets(io) {
       const s = sessions.resumeMobile(code, mobileToken, socket.id);
       if (!s) return fail(cb, 'This pairing has ended. Enter the master code again.', 'NO_SESSION');
       socket.join(s.room);
+      socket.join(s.mobileRoom);
       socket.data.role = 'mobile';
       socket.data.code = s.code;
       reply(cb, { ok: true, code: s.code, state: publicSession(s) });
@@ -283,6 +289,7 @@ export function attachSockets(io) {
       if (!s || socket.data.role !== 'mobile') return reply(cb, { ok: true });
       sessions.unpairMobile(s);
       socket.leave(s.room);
+      socket.leave(s.mobileRoom);
       socket.data.role = null;
       socket.data.code = null;
       reply(cb, { ok: true });
